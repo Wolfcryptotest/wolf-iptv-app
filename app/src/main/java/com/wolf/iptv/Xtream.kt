@@ -100,9 +100,113 @@ class Prefs(ctx: Context) {
     fun cat(tab: String): String? = sp.getString("cat_$tab", null)
     fun setCat(tab: String, id: String) = sp.edit().putString("cat_$tab", id).apply()
 
+    // ---- favoriler / son izlenenler (tür başına JSON dizisi)
+    private fun read(key: String): MutableList<JSONObject> {
+        val t = sp.getString(key, "[]") ?: "[]"
+        return try {
+            val a = JSONArray(t)
+            (0 until a.length()).mapNotNull { a.optJSONObject(it) }.toMutableList()
+        } catch (e: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun write(key: String, list: List<JSONObject>) {
+        val a = JSONArray()
+        list.forEach { a.put(it) }
+        sp.edit().putString(key, a.toString()).apply()
+    }
+
+    fun favs(kind: String): MutableList<JSONObject> = read("fav_$kind")
+    fun recent(kind: String): MutableList<JSONObject> = read("recent_$kind")
+
+    fun isFav(kind: String, o: JSONObject): Boolean {
+        val id = idOf(kind, o)
+        return favs(kind).any { idOf(kind, it) == id }
+    }
+
+    /** true = eklendi, false = çıkarıldı */
+    fun toggleFav(kind: String, o: JSONObject): Boolean {
+        val list = favs(kind)
+        val id = idOf(kind, o)
+        val had = list.removeAll { idOf(kind, it) == id }
+        if (!had) list.add(0, slim(o, keepEp = false))
+        write("fav_$kind", list)
+        return !had
+    }
+
+    fun addRecent(kind: String, o: JSONObject) {
+        val list = recent(kind)
+        val id = idOf(kind, o)
+        list.removeAll { idOf(kind, it) == id }
+        list.add(0, slim(o, keepEp = true))
+        while (list.size > 40) list.removeAt(list.size - 1)
+        write("recent_$kind", list)
+    }
+
+    fun removeRecent(kind: String, o: JSONObject) {
+        val list = recent(kind)
+        val id = idOf(kind, o)
+        list.removeAll { idOf(kind, it) == id }
+        write("recent_$kind", list)
+    }
+
+    // ---- ebeveyn kilidi
+    var parentMode: String                      // gizle / kilit / kapali
+        get() = sp.getString("parentMode", "gizle") ?: "gizle"
+        set(v) = sp.edit().putString("parentMode", v).apply()
+    var pinHash: String
+        get() = sp.getString("pinHash", "") ?: ""
+        set(v) = sp.edit().putString("pinHash", v).apply()
+    val salt: String
+        get() {
+            var t = sp.getString("salt", "") ?: ""
+            if (t.isEmpty()) {
+                t = java.util.UUID.randomUUID().toString()
+                sp.edit().putString("salt", t).apply()
+            }
+            return t
+        }
+
+    fun hash(pin: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        return md.digest("$salt|$pin".toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
     val loggedIn: Boolean get() = server.isNotEmpty() && user.isNotEmpty() && pass.isNotEmpty()
     fun xtream(): Xtream = Xtream(server, user, pass)
     fun logout() = sp.edit().remove("pass").apply()
+}
+
+fun idOf(kind: String, o: JSONObject): String = if (kind == "series") o.s("series_id") else o.s("stream_id")
+
+private val KEEP = listOf("stream_id", "series_id", "name", "num", "stream_icon", "cover", "container_extension",
+    "year", "rating", "releaseDate", "genre", "plot", "category_id")
+
+fun slim(o: JSONObject, keepEp: Boolean): JSONObject {
+    val d = JSONObject()
+    for (k in KEEP) {
+        val v = o.s(k)
+        if (v.isNotEmpty()) d.put(k, if (k == "plot") v.take(300) else v)
+    }
+    if (keepEp) for (k in listOf("_ep_id", "_season", "_ep_title")) {
+        val v = o.s(k)
+        if (v.isNotEmpty()) d.put(k, v)
+    }
+    return d
+}
+
+private val ADULT = listOf("+18", "18+", "+ 18", "18 +", "xxx", "adult", "yetiskin", "porn", "erotik", "erotic",
+    "playboy", "hustler", "dorcel", "brazzers", "penthouse", "redlight", "for adults")
+
+fun isAdultName(name: String): Boolean {
+    val f = fold(name)
+    return ADULT.any { f.contains(it) }
+}
+
+/** Bu oturumda +18 kilidi açıldı mı (uygulama kapanınca kilitlenir). */
+object Lock {
+    var unlocked = false
 }
 
 /** Ekranlar arasında büyük listeleri taşımak için. */
@@ -112,6 +216,8 @@ object Hold {
     var list: List<JSONObject> = emptyList()
     var index: Int = 0
     var seriesName: String = ""
+    var series: JSONObject? = null
+    var season: String = ""
 }
 
 fun JSONObject.s(key: String): String {

@@ -48,9 +48,12 @@ class PlayerActivity : Activity() {
     private var retried = false
     private var url = ""
     private var epgToken = 0
+    private lateinit var favBtn: android.widget.Button
+    private lateinit var prefs: Prefs
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prefs = Prefs(this)
         kind = Hold.kind
         list = Hold.list
         index = Hold.index
@@ -93,6 +96,8 @@ class PlayerActivity : Activity() {
             setPadding(dp(8), dp(8), dp(8), dp(8))
             visibility = View.GONE
         }
+        favBtn = button("☆ Favori", Color.parseColor("#AA1E2029")) { toggleFavNow() }
+        bar.addView(favBtn, lp(WRAP, WRAP).apply { rightMargin = dp(10) })
         if (kind != "vod") {
             val prevLabel = if (kind == "live") "◀◀ Önceki kanal" else "◀◀ Önceki bölüm"
             val nextLabel = if (kind == "live") "Sonraki kanal ▶▶" else "Sonraki bölüm ▶▶"
@@ -113,7 +118,7 @@ class PlayerActivity : Activity() {
         hideSystemUi()
 
         pv.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
-            if (kind != "vod") bar.visibility = v
+            bar.visibility = v
             if (v == View.VISIBLE) showOsd(false) else hideSystemUi()
         })
 
@@ -198,6 +203,18 @@ class PlayerActivity : Activity() {
         }
         osdTitle.text = titleOf(o)
         osdEpg.text = ""
+        // son izlenenlere ekle
+        when (kind) {
+            "live", "vod" -> prefs.addRecent(kind, o)
+            else -> Hold.series?.let { sr ->
+                val rec = JSONObject(sr.toString())
+                rec.put("_ep_id", o.s("id"))
+                rec.put("_season", Hold.season)
+                rec.put("_ep_title", titleOf(o))
+                prefs.addRecent("series", rec)
+            }
+        }
+        updateFavBtn()
         showOsd(true)
         play(u)
         if (kind == "live") loadEpg(o)
@@ -214,6 +231,25 @@ class PlayerActivity : Activity() {
         p.setMediaItem(item)
         p.prepare()
         p.playWhenReady = true
+    }
+
+    private fun favTarget(): Pair<String, JSONObject>? = when (kind) {
+        "live", "vod" -> kind to current()
+        else -> Hold.series?.let { "series" to it }
+    }
+
+    private fun updateFavBtn() {
+        if (!::favBtn.isInitialized) return
+        val t = favTarget()
+        favBtn.visibility = if (t == null) View.GONE else View.VISIBLE
+        favBtn.text = if (t != null && prefs.isFav(t.first, t.second)) "★ Favoride" else "☆ Favori"
+    }
+
+    private fun toggleFavNow() {
+        val t = favTarget() ?: return
+        val added = prefs.toggleFav(t.first, t.second)
+        showMsg(if (added) "★ Favorilere eklendi" else "Favorilerden çıkarıldı", 1800)
+        updateFavBtn()
     }
 
     private fun loadEpg(o: JSONObject) {

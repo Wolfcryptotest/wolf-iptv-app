@@ -51,6 +51,9 @@ class MainActivity : Activity() {
     private var listPos = 0
     private var req = 0
     private val cache = HashMap<String, List<JSONObject>>()
+    private var rawCats: List<JSONObject> = emptyList()
+    private var adultIds: Set<String> = emptySet()
+    private lateinit var lockButton: Button
 
     // görünümler
     private var catList: ListView? = null
@@ -96,7 +99,13 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (::itemAdapter.isInitialized) renderItems(keepScroll = true)
+        if (!::itemAdapter.isInitialized || x == null) return
+        if (mode != "eps" && currentCat() == RECENT && cats.isNotEmpty()) {
+            items = prefs.recent(tab)
+            applyFilter()
+        } else {
+            renderItems(keepScroll = true)
+        }
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
@@ -204,6 +213,9 @@ class MainActivity : Activity() {
         top.addView(text("IPTV", 19f, C.RED, bold = true))
         accText = text("", 12f, C.MUTED).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
         top.addView(accText, lp(0, WRAP, 1f).apply { leftMargin = dp(10) })
+        lockButton = button("🔒", C.FIELD) { openParental() }.apply { minHeight = dp(36); minimumHeight = dp(36) }
+        top.addView(lockButton, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+        updateLockButton()
         top.addView(button("Çıkış", C.FIELD) { confirmLogout() }.apply { minHeight = dp(36); minimumHeight = dp(36) })
         root.addView(top, lp(MATCH, WRAP))
         updateAccount()
@@ -267,6 +279,8 @@ class MainActivity : Activity() {
         }
         itemList = makeList(itemAdapter)
         itemList.setOnItemClickListener { _, _, pos, _ -> activate(pos) }
+        itemList.setOnItemLongClickListener { _, _, pos, _ -> itemMenu(pos); true }
+        itemAdapter.onStar = { pos -> toggleFav(pos) }
         itemList.setOnItemSelectedListener(object : android.widget.AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) = showInfo(pos)
             override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
@@ -373,24 +387,122 @@ class MainActivity : Activity() {
         val xt = x ?: return
         val action = when (t) { "live" -> "get_live_categories"; "vod" -> "get_vod_categories"; else -> "get_series_categories" }
         load({ cached(action) { xt.list(action) } }) { list ->
-            val all = JSONObject().put("category_id", "").put("category_name", "★ Tümü")
-            cats = listOf(all) + list
+            rawCats = list
+            buildCats()
+        }
+    }
+
+    private fun lockActive(): Boolean = prefs.parentMode != "kapali" && !Lock.unlocked
+
+    private fun buildCats() {
+        val list = rawCats
+        adultIds = list.filter { isAdultName(it.s("category_name")) }.map { it.s("category_id") }.toSet()
+        val vis = ArrayList<JSONObject>()
+        for (c in list) {
+            if (lockActive() && c.s("category_id") in adultIds) {
+                if (prefs.parentMode == "gizle") continue
+                vis.add(JSONObject(c.toString()).put("category_name", "🔒 " + c.s("category_name")))
+            } else vis.add(c)
+        }
+        run {
+            val t = tab
+            val fav = JSONObject().put("category_id", FAV).put("category_name", "★ Favoriler")
+            val rec = JSONObject().put("category_id", RECENT).put("category_name", "🕘 Son izlenenler")
+            val all = JSONObject().put("category_id", "").put("category_name", "Tümü")
+            cats = listOf(fav, rec, all) + vis
             catAdapter.rows = cats.map { RowAdapter.Row("", it.s("category_name")) }
             val saved = prefs.cat(t)
             var idx = cats.indexOfFirst { it.s("category_id") == saved }
-            if (idx < 0) idx = if (cats.size > 1) 1 else 0
+            if (idx < 0) idx = if (cats.size > 3) 3 else 2
             loadCat(idx)
+        }
+    }
+
+    private fun blocked(o: JSONObject): Boolean =
+        lockActive() && (o.s("category_id") in adultIds || isAdultName(o.s("name")))
+
+    private fun updateLockButton() {
+        if (!::lockButton.isInitialized) return
+        lockButton.text = if (lockActive()) "🔒 +18" else "🔓 +18"
+    }
+
+    /** PIN sor; PIN yoksa önce yeni PIN belirlet. */
+    private fun askPin(title: String, ok: () -> Unit) {
+        if (prefs.pinHash.isEmpty()) { newPin(ok); return }
+        val e = pinField()
+        AlertDialog.Builder(this).setTitle(title).setMessage("PIN kodunu gir:").setView(e)
+            .setPositiveButton("Tamam") { _, _ ->
+                if (prefs.hash(e.text.toString().trim()) == prefs.pinHash) ok() else toast("PIN yanlış.")
+            }
+            .setNegativeButton("Vazgeç", null).show()
+    }
+
+    private fun pinField(): EditText = EditText(this).apply {
+        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        setTextColor(C.FG)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+    }
+
+    private fun newPin(ok: () -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(4), dp(16), 0) }
+        val e1 = pinField().apply { hint = "Yeni PIN (en az 4 rakam)" }
+        val e2 = pinField().apply { hint = "PIN tekrar" }
+        box.addView(e1); box.addView(e2)
+        AlertDialog.Builder(this).setTitle("Ebeveyn kilidi PIN'i belirle").setView(box)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val a = e1.text.toString().trim()
+                when {
+                    a.length < 4 -> toast("PIN en az 4 rakam olmalı.")
+                    a != e2.text.toString().trim() -> toast("PIN'ler aynı değil.")
+                    else -> { prefs.pinHash = prefs.hash(a); toast("PIN kaydedildi."); ok() }
+                }
+            }
+            .setNegativeButton("Vazgeç", null).show()
+    }
+
+    private fun applyParental() {
+        updateLockButton()
+        if (mode == "eps") closeSeries(silent = true)
+        if (rawCats.isNotEmpty()) buildCats()
+    }
+
+    private fun openParental() {
+        askPin("Ebeveyn kilidi") {
+            val modes = arrayOf("gizle", "kilit", "kapali")
+            val labels = arrayOf("Gizle — +18 hiçbir menüde görünmesin", "Kilitle — 🔒 ile görünsün, PIN ile açılsın", "Kapalı — her şey görünsün")
+            var chosen = modes.indexOf(prefs.parentMode).coerceAtLeast(0)
+            AlertDialog.Builder(this).setTitle("🔒 Ebeveyn kilidi (+18)")
+                .setSingleChoiceItems(labels, chosen) { _, w -> chosen = w }
+                .setPositiveButton("Kaydet") { _, _ -> prefs.parentMode = modes[chosen]; Lock.unlocked = false; applyParental() }
+                .setNeutralButton(if (Lock.unlocked) "🔒 Tekrar kilitle" else "🔓 Bu oturumda aç") { _, _ ->
+                    Lock.unlocked = !Lock.unlocked; applyParental()
+                }
+                .setNegativeButton("PIN değiştir") { _, _ -> newPin {} }
+                .show()
         }
     }
 
     private fun loadCat(i: Int) {
         val c = cats.getOrNull(i) ?: return
+        if (lockActive() && c.s("category_id") in adultIds) {
+            askPin("+18 içerik kilitli") { Lock.unlocked = true; applyParental() }
+            return
+        }
         if (mode == "eps") closeSeries(silent = true)
         catIndex = i
         catAdapter.selected = i
         catList?.setSelection(maxOf(0, i - 3))
         catButton.text = c.s("category_name")
         prefs.setCat(tab, c.s("category_id"))
+        val cid0 = c.s("category_id")
+        if (cid0 == FAV || cid0 == RECENT) {
+            req++
+            items = if (cid0 == FAV) prefs.favs(tab) else prefs.recent(tab)
+            applyFilter()
+            itemList.setSelection(0)
+            if (items.isEmpty()) setLoading(if (cid0 == FAV) "Henüz favori yok — listede ☆ simgesine dokun (TV'de OK'e basılı tut)." else "Henüz izlenen yok.")
+            return
+        }
         setLoading("Yükleniyor…")
         val xt = x ?: return
         val action = when (tab) { "live" -> "get_live_streams"; "vod" -> "get_vod_streams"; else -> "get_series" }
@@ -414,7 +526,8 @@ class MainActivity : Activity() {
     private fun applyFilter() {
         if (mode == "eps") return
         val q = fold(search.text.toString().trim())
-        shown = if (q.isEmpty()) items else items.filter { fold(it.s("name")).contains(q) }
+        val src = if (lockActive()) items.filter { !blocked(it) } else items
+        shown = if (q.isEmpty()) src else src.filter { fold(it.s("name")).contains(q) }
         renderItems()
     }
 
@@ -439,11 +552,13 @@ class MainActivity : Activity() {
                     val inf = it.optJSONObject("info")
                     RowAdapter.Row(it.s("episode_num"), it.s("title"), inf?.s("duration") ?: "", playing)
                 }
-                tab == "live" -> RowAdapter.Row(it.s("num"), it.s("name"), "", playing)
+                tab == "live" -> RowAdapter.Row(it.s("num"), it.s("name"), "", playing, starOf(it))
                 else -> {
                     val y = it.s("year").ifEmpty { it.s("releaseDate").take(4) }
                     val r = it.s("rating")
-                    RowAdapter.Row("", it.s("name"), listOf(y, if (r.isNotEmpty() && r != "0") "★ $r" else "").filter { s -> s.isNotEmpty() }.joinToString(" · "), playing)
+                    val sub = if (it.s("_ep_title").isNotEmpty()) "Son izlenen: " + it.s("_ep_title")
+                    else listOf(y, if (r.isNotEmpty() && r != "0") "★ $r" else "").filter { s -> s.isNotEmpty() }.joinToString(" · ")
+                    RowAdapter.Row("", it.s("name"), sub, playing, starOf(it))
                 }
             }
         }
@@ -454,6 +569,47 @@ class MainActivity : Activity() {
             "vod" -> "Filme dokun: oynar"
             else -> "Diziye dokun: sezon ve bölümler"
         }
+    }
+
+    private fun starOf(o: JSONObject): Int = if (prefs.isFav(tab, o)) 2 else 1
+
+    private fun currentCat(): String = cats.getOrNull(catIndex)?.s("category_id") ?: ""
+
+    private fun toggleFav(pos: Int) {
+        if (mode == "eps") return
+        val o = shown.getOrNull(pos) ?: return
+        val added = prefs.toggleFav(tab, o)
+        Toast.makeText(this, (if (added) "★ Favorilere eklendi: " else "Favorilerden çıkarıldı: ") + o.s("name"), Toast.LENGTH_SHORT).show()
+        if (currentCat() == FAV) {
+            val first = itemList.firstVisiblePosition
+            items = prefs.favs(tab)
+            applyFilter()
+            itemList.setSelection(first)
+        } else {
+            renderItems(keepScroll = true)
+        }
+    }
+
+    private fun itemMenu(pos: Int) {
+        if (mode == "eps") return
+        val o = shown.getOrNull(pos) ?: return
+        val fav = prefs.isFav(tab, o)
+        val opts = mutableListOf(if (fav) "☆ Favorilerden çıkar" else "★ Favorilere ekle", if (tab == "series") "📂 Bölümleri aç" else "▶ Oynat")
+        if (currentCat() == RECENT) opts.add("🗑 Son izlenenlerden kaldır")
+        AlertDialog.Builder(this)
+            .setTitle(o.s("name"))
+            .setItems(opts.toTypedArray()) { _, w ->
+                when (w) {
+                    0 -> toggleFav(pos)
+                    1 -> activate(pos)
+                    2 -> {
+                        prefs.removeRecent(tab, o)
+                        items = prefs.recent(tab)
+                        applyFilter()
+                    }
+                }
+            }
+            .show()
     }
 
     private fun showInfo(pos: Int) {
@@ -486,6 +642,8 @@ class MainActivity : Activity() {
         Hold.list = list
         Hold.index = pos
         Hold.seriesName = series?.s("name") ?: ""
+        Hold.series = if (kind == "ep") series else null
+        Hold.season = season
         startActivity(Intent(this, PlayerActivity::class.java))
     }
 
@@ -528,7 +686,9 @@ class MainActivity : Activity() {
             }
             seasons = map
             val playing = playingKey()
+            val last = "ep:" + s.s("_ep_id")
             val start = map.entries.firstOrNull { en -> en.value.any { "ep:" + it.s("id") == playing } }?.key
+                ?: map.entries.firstOrNull { en -> en.value.any { "ep:" + it.s("id") == last } }?.key
                 ?: map.keys.firstOrNull() ?: ""
             showSeason(start)
             d.optJSONObject("info")?.s("plot")?.takeIf { it.isNotEmpty() }?.let { info.text = it }
@@ -541,7 +701,8 @@ class MainActivity : Activity() {
         seasonButton.text = if (k.isEmpty()) "Sezon ▾" else "$k. Sezon ▾"
         renderItems()
         val playing = playingKey()
-        val idx = eps.indexOfFirst { "ep:" + it.s("id") == playing }
+        var idx = eps.indexOfFirst { "ep:" + it.s("id") == playing }
+        if (idx < 0) idx = eps.indexOfFirst { "ep:" + it.s("id") == "ep:" + (series?.s("_ep_id") ?: "") }
         itemList.setSelection(maxOf(0, idx))
         itemList.requestFocus()
     }
@@ -600,6 +761,9 @@ class MainActivity : Activity() {
         io.shutdownNow()
     }
 }
+
+const val FAV = "__fav"
+const val RECENT = "__recent"
 
 /** Şu an oynayan içerik (listede ▶ ile göstermek için). */
 object PlayerState {

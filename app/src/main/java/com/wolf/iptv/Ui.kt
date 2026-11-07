@@ -77,7 +77,10 @@ const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 /** Satır listesi: numara + başlık + (isteğe bağlı) alt satır; oynayan öğe vurgulanır. */
 class RowAdapter(private val ctx: Context) : BaseAdapter() {
-    data class Row(val num: String, val title: String, val sub: String = "", val playing: Boolean = false)
+    /** star: 0 = yok, 1 = ☆, 2 = ★ */
+    data class Row(val num: String, val title: String, val sub: String = "", val playing: Boolean = false, val star: Int = 0)
+
+    var onStar: ((Int) -> Unit)? = null
 
     var rows: List<Row> = emptyList()
         set(v) {
@@ -99,11 +102,12 @@ class RowAdapter(private val ctx: Context) : BaseAdapter() {
         val num: TextView
         val title: TextView
         val sub: TextView
+        val star: TextView
         if (convertView is LinearLayout && convertView.tag is Array<*>) {
             box = convertView
             @Suppress("UNCHECKED_CAST")
             val t = convertView.tag as Array<TextView>
-            num = t[0]; title = t[1]; sub = t[2]
+            num = t[0]; title = t[1]; sub = t[2]; star = t[3]
         } else {
             box = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -116,11 +120,22 @@ class RowAdapter(private val ctx: Context) : BaseAdapter() {
             sub = ctx.text("", 12.5f, C.MUTED).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
             col.addView(title)
             col.addView(sub)
+            star = ctx.text("☆", 21f, C.MUTED).apply {
+                gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = false
+                setPadding(ctx.dp(6), 0, ctx.dp(10), 0)
+            }
+            box.addView(star, lp(ctx.dp(42), MATCH))
             box.addView(num, lp(WRAP, WRAP))
             box.addView(col, lp(0, WRAP, 1f).apply { leftMargin = ctx.dp(12) })
-            box.tag = arrayOf(num, title, sub)
+            box.tag = arrayOf(num, title, sub, star)
         }
         val r = rows[position]
+        star.visibility = if (r.star == 0) View.GONE else View.VISIBLE
+        star.text = if (r.star == 2) "★" else "☆"
+        star.setTextColor(if (r.star == 2) Color.parseColor("#FACC15") else C.MUTED)
+        star.setOnClickListener { onStar?.invoke(position) }
         num.text = r.num
         num.visibility = if (r.num.isEmpty()) View.GONE else View.VISIBLE
         title.text = if (r.playing) "▶ " + r.title else r.title
