@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="WolfTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorAccent">#3B82F6</item>
+        <item name="android:colorPrimary">#0D0E12</item>
+        <item name="android:colorPrimaryDark">#0D0E12</item>
+        <item name="android:statusBarColor">#0D0E12</item>
+        <item name="android:navigationBarColor">#0D0E12</item>
+    </style>
+    <style name="WolfTheme.Player">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>
